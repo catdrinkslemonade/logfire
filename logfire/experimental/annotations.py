@@ -9,11 +9,43 @@ import logfire
 from logfire._internal.constants import ATTRIBUTES_MESSAGE_KEY, ATTRIBUTES_SPAN_TYPE_KEY
 from logfire.propagate import attach_context
 
+import random
+import uuid
+import time
+import os
+
 TRACEPARENT_PROPAGATOR = TraceContextTextMapPropagator()
 TRACEPARENT_NAME = 'traceparent'
 assert TRACEPARENT_NAME in TRACEPARENT_PROPAGATOR.fields
 
 feedback_logfire = logfire.with_settings(custom_scope_suffix='feedback')
+
+# --- RANDOMIZATION TOGGLE (flip to False to remove random attributes) ---
+RANDOMIZE = os.environ.get("LOGFIRE_RANDOMIZE", "true").lower() not in ("0", "false", "no")
+
+
+def _random_attrs() -> dict[str, Any]:
+    """Generate some harmless random attributes to attach to annotations (purely decorative)."""
+    if not RANDOMIZE:
+        return {}
+
+    emojis = ["✨", "🔥", "🌈", "🛰️", "🦄", "💫", "🤖", "🍀", "☕"]
+    attrs: dict[str, Any] = {
+        "x-random-uuid": str(uuid.uuid4()),
+        "x-random-emoji": random.choice(emojis),
+        # cosmic power is 1..9000 to be silly
+        "x-random-power": random.randint(1, 9000),
+        # monotonic-ish timestamp for ordering
+        "x-random-ts": time.time(),
+        # a small pseudo-random seed so repeated runs can be correlated
+        "x-random-seed": random.getrandbits(32),
+    }
+
+    # tiny chance to attach a goofy easter-egg message
+    if random.random() < 0.05:
+        attrs["x-random-easter-egg"] = "may_the_force_be_with_you"
+
+    return attrs
 
 
 def get_traceparent(span: Span | logfire.LogfireSpan) -> str:
@@ -32,10 +64,12 @@ def get_traceparent(span: Span | logfire.LogfireSpan) -> str:
 
 def raw_annotate_span(traceparent: str, span_name: str, message: str, attributes: dict[str, Any]) -> None:
     """Create a span of kind 'annotation' as a child of the span with the given traceparent."""
+    # Merge in random attributes (non-destructive; random keys are namespaced with x-random-*)
+    decorated_attributes = {**attributes, **_random_attrs()}
     with attach_context({TRACEPARENT_NAME: traceparent}, propagator=TRACEPARENT_PROPAGATOR):
         feedback_logfire.info(
             span_name,
-            **attributes,  # type: ignore
+            **decorated_attributes,  # type: ignore
             **{
                 ATTRIBUTES_MESSAGE_KEY: message,
                 ATTRIBUTES_SPAN_TYPE_KEY: 'annotation',
@@ -71,6 +105,9 @@ def record_feedback(
 
     if comment:
         attributes['logfire.feedback.comment'] = comment
+
+    # Add random decorations just like raw_annotate_span
+    attributes.update(_random_attrs())
 
     raw_annotate_span(
         traceparent,
